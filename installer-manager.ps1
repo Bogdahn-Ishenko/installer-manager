@@ -308,73 +308,192 @@ function Install-AllSections {
     ShowNotification 'Обработка всех разделов завершена.' 'success'
 }
 
-function Install-SelectedInstallers {
-    $manifest = @(GetCurrentManifest | Sort-Object @{Expression={$_.Section}}, @{Expression={$_.Name}})
-    if(-not $manifest){ ShowNotification 'Записей в манифесте нет.' 'warning'; return }
-    $selected = [bool[]]::new($manifest.Count)
-    $index = 0
-    $statusMessage = ''
-    while($true){
-        Clear-Host
-        Write-Host '=== ВЫБОР УСТАНОВЩИКОВ ===' -ForegroundColor Cyan
-        Write-Host 'Стрелки – перемещение, Пробел/Enter – отметить, 1 – запуск, 0 – выход.' -ForegroundColor DarkGray
-        if($statusMessage){ Write-Host $statusMessage -ForegroundColor Yellow }
-        for($i=0;$i -lt $manifest.Count;$i++){
-            $entry = $manifest[$i]
-            $checkbox = if($selected[$i]){ '[x]' } else { '[ ]' }
-            $sectionLabel = if([string]::IsNullOrEmpty($entry.Section)){ 'без раздела' } else { $entry.Section }
-            $lineNumber = $i + 1
-            $versionText = if([string]::IsNullOrEmpty($entry.Version)){ 'unknown' } else { $entry.Version.Trim() }
-            $line = ("{0} {1,3}. {2} (версия {3}) [{4}] {5}" -f $checkbox, $lineNumber, $entry.Name, $versionText, $sectionLabel, $entry.FileName)
-            if($i -eq $index){ Write-Host $line -ForegroundColor Black -BackgroundColor Yellow }
-            else { Write-Host $line -ForegroundColor White }
-        }
-        $key = [System.Console]::ReadKey($true)
-        if($key.KeyChar -eq '1'){
-            $chosen = @()
-            for($i=0;$i -lt $manifest.Count;$i++){
-                if($selected[$i]){ $chosen += $manifest[$i] }
-            }
-            if(-not $chosen){ $statusMessage = 'Отметьте установщики перед запуском.'; continue }
-            Clear-Host
-            foreach($entry in $chosen){
-                $fullPath = Join-Path $InstallersDir $entry.RelativePath
-                if(-not (Test-Path $fullPath)){
-                    ShowNotification "Файл $($entry.RelativePath) не найден." 'warning'
-                    continue
-                }
-                $file = Get-Item -LiteralPath $fullPath -ErrorAction SilentlyContinue
-                if($null -eq $file){
-                    ShowNotification "Не удалось получить файл $($entry.RelativePath)." 'error'
-                    continue
-                }
-                Invoke-InstallerFile -File $file
-            }
-            ShowNotification 'Выбранные установщики обработаны.' 'success'
-            return
-        }
-        if($key.KeyChar -eq '0' -or $key.Key -eq 'Escape'){ return }
-        switch($key.Key){
-            'UpArrow' {
-                if($index -gt 0){ $index-- } else { $index = $manifest.Count - 1 }
-                $statusMessage = ''
-            }
-            'DownArrow' {
-                if($index -lt $manifest.Count - 1){ $index++ } else { $index = 0 }
-                $statusMessage = ''
-            }
-            'Enter' {
-                if($manifest.Count){ $selected[$index] = -not $selected[$index] }
-                $statusMessage = ''
-            }
-            'Spacebar' {
-                if($manifest.Count){ $selected[$index] = -not $selected[$index] }
-                $statusMessage = ''
-            }
-            default { }
-        }
-    }
-}
+function Install-SelectedInstallers {
+
+    $manifest = @(GetCurrentManifest | Sort-Object @{Expression={$_.Section}}, @{Expression={$_.Name}})
+
+    if(-not $manifest){ ShowNotification 'Записей в манифесте нет.' 'warning'; return }
+
+    $selected = [bool[]]::new($manifest.Count)
+
+    $index = 0
+
+    $statusMessage = ''
+
+    $pageSize = 10
+
+    while($true){
+
+        $total = $manifest.Count
+
+        if($total -le 0){ ShowNotification 'Записей в манифесте нет.' 'warning'; return }
+
+        $pageCount = [Math]::Max(1,[Math]::Ceiling($total / $pageSize))
+
+        if($index -ge $total){ $index = $total - 1 }
+
+        if($index -lt 0){ $index = 0 }
+
+        $currentPage = [Math]::Floor($index / $pageSize)
+
+        $pageStart = $currentPage * $pageSize
+
+        $pageEnd = [Math]::Min($pageStart + $pageSize, $total)
+
+        Clear-Host
+
+        Write-Host '=== ВЫБОР УСТАНОВЩИКОВ ===' -ForegroundColor Cyan
+
+        Write-Host 'Стрелки вверх/вниз – перемещение, влево/вправо – страница, Пробел/Enter – отметить, 1 – запуск, 0/Esc – выход.' -ForegroundColor DarkGray
+
+        Write-Host ("Страница {0}/{1} (показано {2}-{3} из {4})" -f ($currentPage + 1), $pageCount, ($pageStart + 1), $pageEnd, $total) -ForegroundColor DarkGray
+
+        if($statusMessage){ Write-Host $statusMessage -ForegroundColor Yellow }
+
+        for($i=$pageStart;$i -lt $pageEnd;$i++){
+
+            $entry = $manifest[$i]
+
+            $checkbox = if($selected[$i]){ '[x]' } else { '[ ]' }
+
+            $sectionLabel = if([string]::IsNullOrEmpty($entry.Section)){ 'без раздела' } else { $entry.Section }
+
+            $lineNumber = $i + 1
+
+            $versionText = if([string]::IsNullOrEmpty($entry.Version)){ 'unknown' } else { $entry.Version.Trim() }
+
+            $line = ("{0} {1,3}. {2} (версия {3}) [{4}] {5}" -f $checkbox, $lineNumber, $entry.Name, $versionText, $sectionLabel, $entry.FileName)
+
+            if($i -eq $index){ Write-Host $line -ForegroundColor Black -BackgroundColor Yellow }
+
+            else { Write-Host $line -ForegroundColor White }
+
+        }
+
+        $key = [System.Console]::ReadKey($true)
+
+        if($key.KeyChar -eq '1'){
+
+            $chosen = @()
+
+            for($i=0;$i -lt $manifest.Count;$i++){
+
+                if($selected[$i]){ $chosen += $manifest[$i] }
+
+            }
+
+            if(-not $chosen){ $statusMessage = 'Отметьте установщики перед запуском.'; continue }
+
+            Clear-Host
+
+            foreach($entry in $chosen){
+
+                $fullPath = Join-Path $InstallersDir $entry.RelativePath
+
+                if(-not (Test-Path $fullPath)){
+
+                    ShowNotification "Файл $($entry.RelativePath) не найден." 'warning'
+
+                    continue
+
+                }
+
+                $file = Get-Item -LiteralPath $fullPath -ErrorAction SilentlyContinue
+
+                if($null -eq $file){
+
+                    ShowNotification "Не удалось получить файл $($entry.RelativePath)." 'error'
+
+                    continue
+
+                }
+
+                Invoke-InstallerFile -File $file
+
+            }
+
+            ShowNotification 'Выбранные установщики обработаны.' 'success'
+
+            return
+
+        }
+
+        if($key.KeyChar -eq '0' -or $key.Key -eq 'Escape'){ return }
+
+        switch($key.Key){
+
+            'UpArrow' {
+
+                if($index -gt 0){ $index-- } else { $index = $total - 1 }
+
+                $statusMessage = ''
+
+            }
+
+            'DownArrow' {
+
+                if($index -lt $total - 1){ $index++ } else { $index = 0 }
+
+                $statusMessage = ''
+
+            }
+
+            'LeftArrow' {
+
+                if($pageCount -gt 1){
+
+                    $newPage = if($currentPage -gt 0){ $currentPage - 1 } else { $pageCount - 1 }
+
+                    $index = $newPage * $pageSize
+
+                    if($index -ge $total){ $index = $total - 1 }
+
+                }
+
+                $statusMessage = ''
+
+            }
+
+            'RightArrow' {
+
+                if($pageCount -gt 1){
+
+                    $newPage = if($currentPage -lt $pageCount - 1){ $currentPage + 1 } else { 0 }
+
+                    $index = $newPage * $pageSize
+
+                    if($index -ge $total){ $index = $total - 1 }
+
+                }
+
+                $statusMessage = ''
+
+            }
+
+            'Enter' {
+
+                if($manifest.Count){ $selected[$index] = -not $selected[$index] }
+
+                $statusMessage = ''
+
+            }
+
+            'Spacebar' {
+
+                if($manifest.Count){ $selected[$index] = -not $selected[$index] }
+
+                $statusMessage = ''
+
+            }
+
+            default { }
+
+        }
+
+    }
+
+}
+
 
 function Show-Installers {
 
