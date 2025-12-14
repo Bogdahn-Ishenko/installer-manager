@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$InstallersDir = (Join-Path $PSScriptRoot 'installers'),
     [string]$ManifestPath = (Join-Path $PSScriptRoot 'installers-manifest.json')
 )
@@ -44,19 +44,67 @@ function GetRelativePath {
     }
 }
 
-function NormalizeManifest($entries){
-    $result = @()
-    foreach($entry in $entries){
-        if(-not $entry.PSObject.Properties['Section']){ $entry | Add-Member Section '' -Force }
-        if(-not $entry.PSObject.Properties['RelativePath']){
-            $rel = if([string]::IsNullOrEmpty($entry.Section)){ $entry.FileName } else { Join-Path $entry.Section $entry.FileName }
-            $entry | Add-Member RelativePath $rel -Force
-        }
-        $result += $entry
-    }
-    return $result
-}
-
+function NormalizeManifest($entries){
+
+    $result = @()
+
+    foreach($entry in $entries){
+
+        if(-not $entry.PSObject.Properties['Section']){ $entry | Add-Member Section '' -Force }
+
+        $sectionValue = $entry.Section
+
+        if(-not [string]::IsNullOrEmpty($sectionValue)){
+
+            if($sectionValue -match '%'){
+
+                try { $sectionValue = [System.Uri]::UnescapeDataString($sectionValue) }
+
+                catch {}
+
+            }
+
+            $entry.Section = $sectionValue.Trim()
+
+        }
+
+        if(-not $entry.PSObject.Properties['RelativePath']){
+
+            $rel = if([string]::IsNullOrEmpty($entry.Section)){ $entry.FileName } else { Join-Path $entry.Section $entry.FileName }
+
+            $entry | Add-Member RelativePath $rel -Force
+
+        }
+
+        $relativePath = $entry.RelativePath
+
+        if($relativePath){
+
+            if($relativePath -match '%'){
+
+                try { $relativePath = [System.Uri]::UnescapeDataString($relativePath) }
+
+                catch {}
+
+            }
+
+            $relativePath = $relativePath.Trim()
+
+            if(-not [string]::IsNullOrEmpty($relativePath)){
+
+                $entry.RelativePath = $relativePath -replace '/', '\'
+
+            }
+
+        }
+
+        $result += $entry
+
+    }
+
+    return $result
+
+}
 function LoadManifest {
     if(-not (Test-Path $ManifestPath)){ return @() }
     $json = Get-Content -Raw -Path $ManifestPath -ErrorAction SilentlyContinue
@@ -328,35 +376,120 @@ function Install-SelectedInstallers {
     }
 }
 
-function Show-Installers {
-    $manifest = @(GetCurrentManifest)
-    if(-not $manifest){ ShowNotification 'Записей в манифесте нет.' 'warning'; return }
-    foreach($section in GetInstallerSections){
-        $entries = $manifest | Where-Object { $_.Section -eq $section.FolderName } | Sort-Object Name
-        if(-not $entries){ continue }
-        Write-Host "\n=== Раздел: $($section.DisplayName) ===" -ForegroundColor Cyan
-        $index = 1
-        foreach($entry in $entries){
-            Write-Host ("  {0}. {1} (версия {2})" -f $index, $entry.Name, $entry.Version) -ForegroundColor White
-            Write-Host ("     Файл: {0}" -f $entry.RelativePath) -ForegroundColor DarkGray
-            $index++
-        }
-    }
-
-    $manifestPaths = $manifest.RelativePath
-    $files = Get-ChildItem -Path $InstallersDir -File -Recurse -ErrorAction SilentlyContinue
-    $orphans = @()
-    foreach($file in $files){
-        $rel = GetRelativePath -BasePath $InstallersDir -FullPath $file.FullName
-        if(-not ($manifestPaths -contains $rel)){
-            $orphans += [pscustomobject]@{ RelativePath=$rel; SizeMB=[Math]::Round($file.Length/1MB,2) }
-        }
-    }
-    if($orphans){
-        Write-Host '\nФайлы без записи в манифесте:' -ForegroundColor Yellow
-        $i = 1
-        foreach($item in $orphans){ Write-Host ("  {0}. {1} ({2} МБ)" -f $i, $item.RelativePath, $item.SizeMB) -ForegroundColor Yellow; $i++ }
-    }
+function Show-Installers {
+
+    $manifest = @(GetCurrentManifest)
+
+    if(-not $manifest){ ShowNotification 'Записей в манифесте нет.' 'warning'; return }
+
+    $sections = @(GetInstallerSections)
+
+    $printedSections = [System.Collections.Generic.HashSet[string]]::new()
+
+    $anyOutput = $false
+
+    foreach($section in $sections){
+
+        $sectionKey = if([string]::IsNullOrEmpty($section.FolderName)){ '' } else { $section.FolderName }
+
+        $entries = $manifest | Where-Object {
+
+            $current = if([string]::IsNullOrEmpty($_.Section)){ '' } else { $_.Section }
+
+            $current -eq $sectionKey
+
+        } | Sort-Object Name
+
+        if(-not $entries){ continue }
+
+        $null = $printedSections.Add($sectionKey)
+
+        $anyOutput = $true
+
+        Write-Host "\n=== Раздел: $($section.DisplayName) ===" -ForegroundColor Cyan
+
+        $index = 1
+
+        foreach($entry in $entries){
+
+            Write-Host ("  {0}. {1} (версия {2})" -f $index, $entry.Name, $entry.Version) -ForegroundColor White
+
+            Write-Host ("     Файл: {0}" -f $entry.RelativePath) -ForegroundColor DarkGray
+
+            $index++
+
+        }
+
+    }
+
+    $leftover = @()
+
+    foreach($entry in $manifest){
+
+        $key = if([string]::IsNullOrEmpty($entry.Section)){ '' } else { $entry.Section }
+
+        if(-not $printedSections.Contains($key)){ $leftover += $entry }
+
+    }
+
+    if($leftover){
+
+        $groups = $leftover | Group-Object { if([string]::IsNullOrEmpty($_.Section)){ '' } else { $_.Section } }
+
+        foreach($group in $groups){
+
+            $display = if([string]::IsNullOrEmpty($group.Name)){ 'Общий раздел (только в манифесте)' } else { "$($group.Name) (только в манифесте)" }
+
+            Write-Host "\n=== Раздел: $display ===" -ForegroundColor Magenta
+
+            $index = 1
+
+            foreach($entry in ($group.Group | Sort-Object Name)){
+
+                Write-Host ("  {0}. {1} (версия {2})" -f $index, $entry.Name, $entry.Version) -ForegroundColor White
+
+                Write-Host ("     Файл: {0}" -f $entry.RelativePath) -ForegroundColor DarkGray
+
+                $index++
+
+            }
+
+            $anyOutput = $true
+
+        }
+
+    }
+
+    if(-not $anyOutput){ ShowNotification 'Не найдено записей для отображения.' 'warning' }
+
+    $manifestPaths = $manifest.RelativePath
+
+    $files = Get-ChildItem -Path $InstallersDir -File -Recurse -ErrorAction SilentlyContinue
+
+    $orphans = @()
+
+    foreach($file in $files){
+
+        $rel = GetRelativePath -BasePath $InstallersDir -FullPath $file.FullName
+
+        if(-not ($manifestPaths -contains $rel)){
+
+            $orphans += [pscustomobject]@{ RelativePath=$rel; SizeMB=[Math]::Round($file.Length/1MB,2) }
+
+        }
+
+    }
+
+    if($orphans){
+
+        Write-Host '\nФайлы без записи в манифесте:' -ForegroundColor Yellow
+
+        $i = 1
+
+        foreach($item in $orphans){ Write-Host ("  {0}. {1} ({2} МБ)" -f $i, $item.RelativePath, $item.SizeMB) -ForegroundColor Yellow; $i++ }
+
+    }
+
 }
 
 function Install-Menu {
